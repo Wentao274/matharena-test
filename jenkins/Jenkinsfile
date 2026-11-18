@@ -32,6 +32,7 @@ pipeline {
         booleanParam(name: 'TASK_ARXIVMATH', defaultValue: true, description: '运行 ArXivMath 09/2026 (53 题,研究级数学题,pass@1,需 LLM 评判)')
 
         string(name: 'N', defaultValue: '1', description: '每题运行次数(默认 1,即 ArXivMath 官方口径;提高会更稳定但计算量线性增长)')
+        string(name: 'PROBLEMS', defaultValue: '', description: '只跑指定题目:1 起始题号,空格分隔(如 "1 2 3 4 5";冒烟测试用;空 = 全量)')
         string(name: 'MAX_TOKENS', defaultValue: '131072', description: '生成最大 token 数(默认 131072;空 = 不写入配置)')
         string(name: 'TEMPERATURE', defaultValue: '1.0', description: '采样温度(默认 1.0;空 = 不写入配置)')
         string(name: 'TOP_P', defaultValue: '0.95', description: 'top_p(默认 0.95;空 = 不写入配置)')
@@ -75,6 +76,7 @@ pipeline {
                     println("BASE_URL:        ${params.BASE_URL}  (→ ${env.BASE_URL_V1})")
                     println("任务 ArXivMath:   ${params.TASK_ARXIVMATH}")
                     println("每题运行次数:    ${params.N}")
+                    println("题目范围:        ${params.PROBLEMS?.trim() ? params.PROBLEMS.trim() + ' (子集/冒烟)' : '全量'}")
                     println("并发请求:        ${params.CONCURRENT_REQUESTS}")
                     println("temperature:     ${params.TEMPERATURE ?: 'default'}")
                     println("top_p:           ${params.TOP_P ?: 'default'}")
@@ -256,6 +258,7 @@ uv run python jenkins/run_matharena_eval.py \\
     --api-key '${apiKeyStr}' \\
     --comps ${env.COMPS} \\
     --n '${params.N}' \\
+    --problems '${params.PROBLEMS}' \\
     --max-tokens '${params.MAX_TOKENS}' \\
     --temperature '${params.TEMPERATURE}' \\
     --top-p '${params.TOP_P}' \\
@@ -455,6 +458,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>API地址</th><td>${params.BASE_URL}</td></tr>
                 <tr><th>评测数据集</th><td>${env.COMPS ?: (failureReason ? '未执行(连通性检查未通过)' : 'N/A')}</td></tr>
                 <tr><th>每题运行次数</th><td>${params.N}</td></tr>
+                <tr><th>题目范围</th><td>${params.PROBLEMS?.trim() ? params.PROBLEMS.trim() + ' (子集/冒烟)' : '全量'}</td></tr>
                 <tr><th>并发请求</th><td>${params.CONCURRENT_REQUESTS}</td></tr>
                 <tr><th>temperature</th><td>${params.TEMPERATURE ?: 'default'}</td></tr>
                 <tr><th>top_p</th><td>${params.TOP_P ?: 'default'}</td></tr>

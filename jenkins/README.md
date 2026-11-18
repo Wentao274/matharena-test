@@ -114,6 +114,7 @@ RECIPIENTS     = liwt@zetyun.com     # 报告接收人,逗号分隔
 | `API_KEY` | 否 | 模型服务鉴权 Key,无鉴权留空;写入生成配置的 `api_key_env` |
 | `TASK_ARXIVMATH` | 是(勾选) | ArXivMath 09/2026(`arxiv/september`,研究级数学题,pass@1,需 LLM 评判) |
 | `N` | 否 | 每题运行次数,默认 1(ArXivMath 官方口径;增大计算量线性增长) |
+| `PROBLEMS` | 否 | 只跑指定题目:1 起始题号,空格分隔(如 `1 2 3 4 5`),**冒烟测试用**;空 = 全量。评判只处理已生成的运行文件,未跑题目在汇总中计为"缺失"(不算失败) |
 | `MAX_TOKENS` | 否 | 生成最大 token 数,默认 131072;**不要超过模型上下文长度**,否则请求报错;留空 = 不写入配置 |
 | `TEMPERATURE` / `TOP_P` | 否 | 采样参数,默认 1.0 / 0.95;留空 = 不写入配置 |
 | `CONCURRENT_REQUESTS` | 否 | 并发请求数,默认 30;建议不超过模型服务的 `--max-num-seqs`,否则大量 429/超时 |
@@ -176,6 +177,7 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | 请求 400 报 context 超限 | MAX_TOKENS 超过模型上下文长度,按模型实际能力调小 |
 | 数据集下载失败 | PROXY_URL 未填或代理不可用;编排脚本预下载失败会立即报错(退出码 2),已下载过的数据集走本地缓存 |
 | 环境检查阶段报"未安装 uv" | 在评测机安装:`curl -LsSf https://astral.sh/uv/install.sh \| sh`(需出网或代理);依赖安装/venv 验证由每次构建自动执行,无需手工干预 |
+| 冒烟测试只跑几道题 | `PROBLEMS` 填题号(如 `1 2 3 4 5`);评判自动只判已跑题目,邮件"缺失题数"较大属正常,pass@1 仅统计已评判题 |
 | API_KEY 填了但服务无鉴权 | 不影响(服务忽略鉴权头);反之服务有鉴权而未填,会在评测阶段大量 401 |
 | 想加新数据集 | Jenkinsfile `parameters` 加 booleanParam → `运行matharena评测` stage 的 compList 加映射 → `extract_results.py` 的 `DISPLAY_NAMES` 加显示名 |
 
@@ -197,6 +199,7 @@ uv run python jenkins/run_matharena_eval.py \
 | 场景 | 做法 |
 | --- | --- |
 | 常规手动执行 | 省略 `--build-number`,每次自动新目录(时间戳),前后互不覆盖 |
+| 冒烟测试(只跑部分题) | 追加 `--problems '1 2 3 4 5'`(1 起始题号,空格分隔;空 = 全量) |
 | 中断后续跑 | 重新执行并显式传回脚本启动时打印的编号,如 `--build-number manual-20261118-153045` |
 | 对齐 Jenkins 结构 | 传任意编号即可,如 `--build-number manual-01` |
 

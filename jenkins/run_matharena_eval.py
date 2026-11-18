@@ -25,6 +25,10 @@
 注意:同一 build_number 下重跑(如 Jenkins stage 重试)会复用同一输出目录,
 run.py 对已完成的题目自动跳过,天然支持断点续跑。
 
+--problems '1 2 3' 可只跑指定题号(冒烟测试/子集评测):
+judge.py 只评判已生成的运行文件,提取汇总将未跑的题计为"缺失"(不算失败),
+pass@1 仅统计已评判题目。
+
 手动执行可省略 --build-number,脚本自动生成 manual-<YYYYMMDD-HHMMSS>,
 每次执行获得独立目录,不会覆盖此前的结果;需断点续跑时显式传回同一编号。
 
@@ -72,6 +76,11 @@ def parse_args():
         "--comps", required=True, nargs="+", help="竞赛配置路径列表,如 arxiv/september"
     )
     parser.add_argument("--n", type=int, default=1, help="每题运行次数(ArXivMath 官方口径为 1)")
+    parser.add_argument(
+        "--problems",
+        default="",
+        help="只跑指定题目:1 起始题号,空格分隔字符串(如 '1 2 3';冒烟测试用;空 = 全量)",
+    )
     parser.add_argument("--max-tokens", default="", help="最大生成 token 数(空 = 不写入配置)")
     parser.add_argument("--temperature", default="", help="采样温度(空 = 不写入配置)")
     parser.add_argument("--top-p", default="", help="top_p(空 = 不写入配置)")
@@ -291,6 +300,17 @@ def main():
         print(f"=== 未指定 --build-number,自动生成: {args.build_number} ===")
         print("    (如需断点续跑,请重新执行并显式传回同一编号)")
 
+    # 题目子集(冒烟测试):解析并校验 --problems,非空时只跑指定题号
+    problem_indices = args.problems.split()
+    if problem_indices:
+        if not all(p.isdigit() for p in problem_indices):
+            print("ERROR: --problems 须为空格分隔的正整数题号(如 '1 2 3')")
+            sys.exit(1)
+        if any(int(p) < 1 for p in problem_indices):
+            print("ERROR: --problems 题号从 1 起始")
+            sys.exit(1)
+        print(f"=== 题目子集模式(冒烟测试):只运行题号 {problem_indices} ===")
+
     output_dir = os.path.abspath(
         os.path.join(
             REPO_ROOT,
@@ -330,6 +350,8 @@ def main():
         "--output-dir",
         os.path.join(output_dir, "outputs"),
     ]
+    if problem_indices:
+        run_cmd += ["--problems", *problem_indices]
     run_rc = run_command(run_cmd, run_log, env)
     if run_rc != 0:
         print(f"ERROR: 评测运行失败(退出码 {run_rc}),跳过评判与提取之外的步骤")
