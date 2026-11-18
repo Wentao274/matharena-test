@@ -125,7 +125,7 @@ RECIPIENTS     = liwt@zetyun.com     # 报告接收人,逗号分隔
 | `DESCRIPTION` | 否 | 模型服务描述(仅邮件展示) |
 | `RECIPIENTS` | 是 | 报告邮件接收者,逗号分隔 |
 | `WORK_DIR` | 是 | 评测机上的仓库目录,默认 `/dingofs/data2/userdata/liwt/maas-image/matharena-test`,**请勿改动** |
-| `PROXY_URL` | 否 | **仅数据集下载**用代理;默认值为占位符 `http://<proxy-host>:<proxy-port>`,需要代理时填实际地址(占位符未填实际地址时按不使用代理处理);评测/评判不受影响 |
+| `PROXY_URL` | 否 | 代理,仅 **uv sync 依赖安装**与**数据集预下载**使用;**连通性检查、评测、评判一律不走代理**(各阶段显式清空代理变量,防全局环境泄漏)。默认占位符 `http://<proxy-host>:<proxy-port>`,填实际地址后生效(占位符=不用代理) |
 
 ## 五、查看结果
 

@@ -243,6 +243,11 @@ def download_datasets(args):
 
     print(f"=== 预下载数据集: {hf_datasets} ===")
     proxy_env = dict(os.environ)
+    # 代理仅按 --proxy 参数显式注入:先剔除继承的代理变量(如机器全局配置),
+    # 保证未填参数时直连、填参数时仅用所填代理,行为可预期
+    for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+               "all_proxy", "ALL_PROXY"):
+        proxy_env.pop(_k, None)
     if args.proxy:
         proxy_env["https_proxy"] = args.proxy
         proxy_env["http_proxy"] = args.proxy
@@ -330,6 +335,11 @@ def main():
     generate_local_judge_config(args)
 
     env = dict(os.environ)
+    # 评测/评判不走代理:剔除子进程环境中继承的代理变量
+    # (代理仅用于数据集预下载子进程,由 --proxy 参数显式注入)
+    for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+               "all_proxy", "ALL_PROXY"):
+        env.pop(_k, None)
     if args.api_key:
         env[API_KEY_ENV_NAME] = args.api_key
     if args.judge_api_key:

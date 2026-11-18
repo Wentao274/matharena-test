@@ -49,7 +49,7 @@ pipeline {
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
         text(name: 'RECIPIENTS', defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
         string(name: 'WORK_DIR', defaultValue: '/dingofs/data2/userdata/liwt/maas-image/matharena-test', description: '远程仓库目录,请不要改动')
-        string(name: 'PROXY_URL', defaultValue: 'http://<proxy-host>:<proxy-port>', description: '数据集下载代理(格式 http://<proxy-host>:<proxy-port>,请填写实际地址;仅预下载阶段使用,评测/评判不走代理,留空=不使用代理)')
+        string(name: 'PROXY_URL', defaultValue: 'http://<proxy-host>:<proxy-port>', description: '代理(请填写实际地址;仅 uv sync 依赖安装与数据集预下载使用;连通性检查/评测/评判一律不走代理;留空=不使用代理)')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
@@ -117,6 +117,8 @@ pipeline {
                             sh """
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
 set -o pipefail
+# 连通性检查不走代理(代理仅用于 uv sync 依赖安装与数据集预下载;同时防御全局环境泄漏的代理变量)
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 {
     echo "=== 检查 API 连通性 (/v1/models) ==="
     HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
@@ -160,6 +162,8 @@ ENDSSH
                     sh """
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
 set -e
+# 清空继承的代理变量(本阶段仅 uv sync 按参数条件使用代理)
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 cd ${params.WORK_DIR}
 echo "工作目录: \$(pwd)"
 
@@ -247,6 +251,8 @@ ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << ENDSSH
 set -e
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+# 评测/评判不走代理(代理仅经 --proxy 参数注入数据集预下载子进程)
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 cd ${params.WORK_DIR}
 echo "=== 执行 MathArena 评测编排脚本 ==="
 uv run python jenkins/run_matharena_eval.py \\
