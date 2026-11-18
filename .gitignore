@@ -76,3 +76,12 @@ core_*
 # Generated LeanLean data, caches and local runtime manifests.
 /leanlean/work/
 **/eval-runtime.json
+
+# IDE
+.idea/
+
+# 测试运行产物(Jenkins 触发与手动执行编排脚本共用,见 jenkins/run_matharena_eval.py)
+jenkins_output/
+configs/models/alaya_test_model.yaml
+configs/models/alaya_local_judge.yaml
+configs/judges/local_judge.yaml

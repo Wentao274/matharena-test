@@ -1,0 +1,543 @@
+// MathArena 精度评测流水线(参考 sgl-eval-test/Jenkinsfile 模式)
+//
+// 触发方式: Jenkins 参数化构建。Jenkins agent 通过 SSH 到远端评测机执行,
+// 评测机访问 GPU 机器上的 OpenAI 兼容模型服务(vllm serve 等)。
+//
+// 评测模式: 纯模型模式(api: custom + HTTP),不需要 Docker/沙箱。
+//   - 被测模型: 远端 GPU 机器上的模型服务(经 OpenAI 兼容 API 访问)
+//   - 评判模型: 仅支持本地部署的裁判模型(经 OpenAI 兼容 API 访问,
+//     JUDGE_MODEL/JUDGE_BASE_URL 必填)
+//
+// 仓库新增文件(不修改原有代码):
+//   jenkins/Jenkinsfile              本文件
+//   jenkins/run_matharena_eval.py    评测机编排脚本(生成 alaya_test_model.yaml → run → judge → 提取)
+//   jenkins/extract_results.py       评分提取(result_summary.json / result_summary.csv)
+//
+// 运行时动态生成(每次触发删除重建):
+//   configs/models/alaya_test_model.yaml
+//   configs/models/alaya_local_judge.yaml + configs/judges/local_judge.yaml
+
+pipeline {
+    agent {
+        label 'slave-2'
+    }
+    parameters {
+        string(name: 'TESTER', defaultValue: 'liwt', description: '测试人员名称(必填)')
+        string(name: 'CHIP', defaultValue: 'nvidia-h100', description: '芯片平台名称(必填)')
+        string(name: 'MODEL', defaultValue: 'glm-5.3', description: '模型服务名称(必填,须与 vllm serve --served-model-name 一致)')
+        string(name: 'BASE_URL', defaultValue: 'https://codingplan-staging.alayanew.com:26443', description: 'OpenAI 兼容端点根 URL(必填,不带 /v1 后缀,流水线会自动拼接)')
+        password(name: 'API_KEY', defaultValue: '', description: '模型服务 API Key(可选,无需认证时留空)')
+
+        // 评测数据集:每个数据集一个 boolean,勾选后运行
+        booleanParam(name: 'TASK_ARXIVMATH', defaultValue: true, description: '运行 ArXivMath 09/2026 (53 题,研究级数学题,pass@1,需 LLM 评判)')
+
+        string(name: 'N', defaultValue: '1', description: '每题运行次数(默认 1,即 ArXivMath 官方口径;提高会更稳定但计算量线性增长)')
+        string(name: 'MAX_TOKENS', defaultValue: '131072', description: '生成最大 token 数(默认 131072;空 = 不写入配置)')
+        string(name: 'TEMPERATURE', defaultValue: '1.0', description: '采样温度(默认 1.0;空 = 不写入配置)')
+        string(name: 'TOP_P', defaultValue: '0.95', description: 'top_p(默认 0.95;空 = 不写入配置)')
+        string(name: 'CONCURRENT_REQUESTS', defaultValue: '30', description: '并发请求数(默认 30,建议不超过模型服务的 --max-num-seqs)')
+        string(name: 'TIMEOUT', defaultValue: '', description: '单请求超时,单位秒(空 = 框架默认 30000 秒)')
+
+        // 本地部署裁判(裁判仅支持本地部署模型,JUDGE_MODEL/JUDGE_BASE_URL 必填;
+        // 运行时自动生成并删除重建
+        // configs/models/alaya_local_judge.yaml + configs/judges/local_judge.yaml)
+        string(name: 'JUDGE_MODEL', defaultValue: '', description: '本地裁判模型名(必填,须与裁判服务 --served-model-name 一致;建议与被测模型用不同家族的强模型,避免自评偏差)')
+        string(name: 'JUDGE_BASE_URL', defaultValue: '', description: '本地裁判服务根 URL(必填,不带 /v1,流水线自动拼接)')
+        password(name: 'JUDGE_API_KEY', defaultValue: '', description: '本地裁判服务 API Key(无需认证时留空)')
+
+        string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
+        text(name: 'RECIPIENTS', defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
+        string(name: 'WORK_DIR', defaultValue: '/dingofs/data2/userdata/liwt/maas-image/matharena-test', description: '远程仓库目录,请不要改动')
+        string(name: 'PROXY_URL', defaultValue: 'http://<proxy-host>:<proxy-port>', description: '数据集下载代理(格式 http://<proxy-host>:<proxy-port>,请填写实际地址;仅预下载阶段使用,评测/评判不走代理,留空=不使用代理)')
+    }
+    environment {
+        SSH_CREDENTIALS = 'HOST_SSH_KEY'
+        REMOTE_HOST = '10.201.132.50'
+        REMOTE_USER = 'root'
+        // 幂等拼接 OpenAI 兼容端点: 剥尾斜杠 → 剥结尾 /v1 → 统一补 /v1
+        BASE_URL_V1 = "${params.BASE_URL.replaceAll('/+\$', '').replaceAll('/?v1\$', '')}/v1"
+        // 本地裁判端点(JUDGE_BASE_URL 幂等拼接)
+        JUDGE_URL_V1 = "${params.JUDGE_BASE_URL.replaceAll('/+\$', '').replaceAll('/?v1\$', '')}/v1"
+        // 占位符防护:PROXY_URL 仍为默认占位符(含 <)时按未填写处理
+        PROXY_URL_CLEAN = "${params.PROXY_URL.contains('<') ? '' : params.PROXY_URL}"
+    }
+
+    stages {
+        stage('打印测试参数') {
+            steps {
+                script {
+                    println("========================================")
+                    println("=== 测试参数信息 ===")
+                    println("========================================")
+                    println("测试人员:        ${params.TESTER}")
+                    println("芯片平台:        ${params.CHIP}")
+                    println("模型名称:        ${params.MODEL}")
+                    println("BASE_URL:        ${params.BASE_URL}  (→ ${env.BASE_URL_V1})")
+                    println("任务 ArXivMath:   ${params.TASK_ARXIVMATH}")
+                    println("每题运行次数:    ${params.N}")
+                    println("并发请求:        ${params.CONCURRENT_REQUESTS}")
+                    println("temperature:     ${params.TEMPERATURE ?: 'default'}")
+                    println("top_p:           ${params.TOP_P ?: 'default'}")
+                    println("max_tokens:      ${params.MAX_TOKENS ?: 'unlimited'}")
+                    println("timeout:         ${params.TIMEOUT ?: 'default'}")
+                    println("本地裁判模型:    ${params.JUDGE_MODEL ?: '(未填写!)'}")
+                    println("本地裁判地址:    ${params.JUDGE_BASE_URL ?: '(未填写!)'}")
+                    println("模型描述:        ${params.DESCRIPTION}")
+                    println("邮件接收者:      ${params.RECIPIENTS}")
+                    println("工作目录:        ${params.WORK_DIR}")
+                    println("下载代理:        ${env.PROXY_URL_CLEAN ?: 'none (未配置或占位符未填实际地址)'}")
+                    println("构建编号:        #${BUILD_NUMBER}")
+                    println("========================================")
+                    // 裁判仅支持本地部署模型,必填校验(失败快速终止,不浪费算力)
+                    if (!params.JUDGE_MODEL?.trim() || !params.JUDGE_BASE_URL?.trim()) {
+                        error '本地裁判参数 JUDGE_MODEL / JUDGE_BASE_URL 必填(裁判仅支持本地部署模型)'
+                    }
+                }
+            }
+        }
+
+        stage('API 连通性预检') {
+            steps {
+                sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                    script {
+                        try {
+                            // 本地裁判服务预检块(JUDGE_MODEL/JUDGE_BASE_URL 已在打印参数阶段校验必填;
+                            // 裁判挂了提前失败,避免整轮评测跑完才发现 53 题全部待评判)
+                            def judgeCheck = """
+    echo "=== 检查本地裁判服务连通性 (/v1/models) ==="
+    JUDGE_HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.JUDGE_URL_V1}/models)
+    if [ "\${JUDGE_HTTP_CODE}" != "200" ]; then
+        echo "ERROR: 本地裁判服务连通性检查失败, HTTP状态码: \${JUDGE_HTTP_CODE}, URL: ${env.JUDGE_URL_V1}/models (请检查 JUDGE_BASE_URL/JUDGE_MODEL 参数)"
+        exit 1
+    fi
+    echo "本地裁判服务连通性检查通过, HTTP状态码: \${JUDGE_HTTP_CODE}"
+"""
+                            sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+set -o pipefail
+{
+    echo "=== 检查 API 连通性 (/v1/models) ==="
+    HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
+    if [ "\${HTTP_CODE}" != "200" ]; then
+        echo "ERROR: API 连通性检查失败, HTTP状态码: \${HTTP_CODE}, URL: ${env.BASE_URL_V1}/models"
+        exit 1
+    fi
+    echo "API /models 连通性检查通过, HTTP状态码: \${HTTP_CODE}"
+
+    echo "=== 检查 Chat Completions 接口 ==="
+    CHAT_RESP=\$(curl -s --connect-timeout 10 -m 60 -w "\\n%{http_code}" ${env.BASE_URL_V1}/chat/completions \\
+        -H "Content-Type: application/json" \\
+        -d '{"model":"${params.MODEL}","messages":[{"role":"user","content":"hello"}],"max_tokens":10}')
+    CHAT_HTTP_CODE=\$(echo "\${CHAT_RESP}" | tail -1)
+    if [ "\${CHAT_HTTP_CODE}" != "200" ]; then
+        echo "ERROR: Chat Completions 接口检查失败, HTTP状态码: \${CHAT_HTTP_CODE}"
+        echo "响应内容: \$(echo "\${CHAT_RESP}" | head -n -1)"
+        exit 1
+    fi
+    echo "Chat Completions 接口检查通过, HTTP状态码: \${CHAT_HTTP_CODE}"
+${judgeCheck}
+} 2>&1 | tee /tmp/matharena_connectivity_${BUILD_NUMBER}.log
+ENDSSH
+"""
+                        } catch (Exception e) {
+                            env.CONNECTIVITY_FAILED = 'true'
+                            currentBuild.result = 'UNSTABLE'
+                            println("=== API 连通性预检失败,后续阶段(环境检查、运行matharena评测)将跳过 ===")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('环境检查') {
+            when {
+                expression { env.CONNECTIVITY_FAILED != 'true' }
+            }
+            steps {
+                sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                    sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+set -e
+cd ${params.WORK_DIR}
+echo "工作目录: \$(pwd)"
+
+echo "=== 清理残留进程 (matharena run/judge/编排脚本) ==="
+# 与 sgl-eval 相同的精确匹配策略:排除 Jenkins durable wrapper 进程
+RESIDUAL=\$(pgrep -af "scripts/run\\.py|scripts/judge/judge\\.py|run_matharena_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+if [ -n "\${RESIDUAL}" ]; then
+    echo "发现残留进程:"
+    echo "\${RESIDUAL}"
+    echo "发送 SIGTERM..."
+    echo "\${RESIDUAL}" | awk '{print \$1}' | xargs -r kill -TERM 2>/dev/null || true
+    sleep 3
+    REMAINING=\$(pgrep -af "scripts/run\\.py|scripts/judge/judge\\.py|run_matharena_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+    if [ -n "\${REMAINING}" ]; then
+        echo "残留进程未响应 SIGTERM,发送 SIGKILL..."
+        echo "\${REMAINING}" | awk '{print \$1}' | xargs -r kill -KILL 2>/dev/null || true
+        sleep 1
+    fi
+    FINAL=\$(pgrep -af "scripts/run\\.py|scripts/judge/judge\\.py|run_matharena_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+    if [ -n "\${FINAL}" ]; then
+        echo "WARN: 以下残留进程仍存在,需人工介入:"
+        echo "\${FINAL}"
+    else
+        echo "残留进程清理完成"
+    fi
+else
+    echo "未发现残留进程"
+fi
+
+echo "=== 检查并同步虚拟环境 ==="
+if [ ! -d "${params.WORK_DIR}/.venv" ]; then
+    if [ -n "${PROXY_URL_CLEAN}" ]; then
+        export https_proxy=${PROXY_URL_CLEAN}
+        export http_proxy=${PROXY_URL_CLEAN}
+        echo "uv sync 使用代理: ${PROXY_URL_CLEAN}"
+    else
+        echo "uv sync 直连(未配置代理)"
+    fi
+    echo "首次构建:执行 uv sync 创建虚拟环境..."
+    cd ${params.WORK_DIR}
+    uv sync
+    unset https_proxy
+    unset http_proxy
+fi
+
+cd ${params.WORK_DIR}
+echo "=== 环境检查完成 ==="
+ENDSSH
+"""
+                }
+            }
+        }
+
+        stage('运行matharena评测') {
+            when {
+                expression { env.CONNECTIVITY_FAILED != 'true' }
+            }
+            steps {
+                script {
+                    def compList = []
+                    if (params.TASK_ARXIVMATH) compList.add('arxiv/september')
+                    if (compList.isEmpty()) {
+                        error '至少需要选择一个评测数据集'
+                    }
+                    env.COMPS = compList.join(' ')
+
+                    def modelDir = params.MODEL.contains("/") ? params.MODEL.split("/").last() : params.MODEL
+                    env.MODEL_DIR = modelDir
+                    env.RESULT_DIR = "jenkins_output/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${modelDir}"
+
+                    def apiKeyStr = params.API_KEY?.toString() ?: ''
+                    def judgeApiKeyStr = params.JUDGE_API_KEY?.toString() ?: ''
+
+                    sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << ENDSSH
+set -e
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+cd ${params.WORK_DIR}
+echo "=== 执行 MathArena 评测编排脚本 ==="
+uv run python jenkins/run_matharena_eval.py \\
+    --tester ${params.TESTER} \\
+    --build-number ${BUILD_NUMBER} \\
+    --chip ${params.CHIP} \\
+    --model '${params.MODEL}' \\
+    --base-url '${env.BASE_URL_V1}' \\
+    --api-key '${apiKeyStr}' \\
+    --comps ${env.COMPS} \\
+    --n '${params.N}' \\
+    --max-tokens '${params.MAX_TOKENS}' \\
+    --temperature '${params.TEMPERATURE}' \\
+    --top-p '${params.TOP_P}' \\
+    --concurrent-requests '${params.CONCURRENT_REQUESTS}' \\
+    --timeout '${params.TIMEOUT}' \\
+    --judge-model '${params.JUDGE_MODEL}' \\
+    --judge-base-url '${params.JUDGE_BASE_URL}' \\
+    --judge-api-key '${judgeApiKeyStr}' \\
+    --proxy '${PROXY_URL_CLEAN}'
+echo "=== 评测编排脚本执行结束 ==="
+echo "=== 输出目录 ==="
+find ${env.RESULT_DIR} -maxdepth 1 -type f 2>/dev/null || echo "(输出目录不存在)"
+ENDSSH
+"""
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('拉取测试结果') {
+            steps {
+                sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        script {
+                            def remoteDir = "${params.WORK_DIR}/${env.RESULT_DIR}"
+                            def localDir = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR}"
+                            def localBuildsDir = "builds/${BUILD_NUMBER}"
+                            echo "拉取测试结果目录: ${remoteDir}"
+
+                            if (env.CONNECTIVITY_FAILED == 'true') {
+                                echo "=== 连通性检查未通过,跳过测试结果目录拉取,仅拉取连通性预检日志 ==="
+                            } else {
+                                sh """
+mkdir -p ${localDir}
+scp -o StrictHostKeyChecking=no \
+    -r ${REMOTE_USER}@${REMOTE_HOST}:${remoteDir} \
+    ${localDir}/
+echo "=== 拉取结果 ==="
+find ${localDir}/ -type f
+"""
+                            }
+
+                            sh """
+mkdir -p ${localBuildsDir}
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    ${REMOTE_USER}@${REMOTE_HOST}:/tmp/matharena_connectivity_${BUILD_NUMBER}.log \
+    ./${localBuildsDir}/matharena_connectivity_${BUILD_NUMBER}.log 2>/dev/null \
+    && echo "连通性预检日志已拉取: ${localBuildsDir}/matharena_connectivity_${BUILD_NUMBER}.log" \
+    || echo "WARN: 连通性预检日志拉取失败"
+"""
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('发送邮件') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    script {
+                        // scp 拉取后本地结构: reports/<tester>/<build>/<chip>/<modelDir>/...
+                        def resultBase = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR ?: 'none'}"
+
+                        // 连通性预检失败检测(对齐 sgl-eval 逻辑)
+                        def connectivityLogPath = "builds/${BUILD_NUMBER}/matharena_connectivity_${BUILD_NUMBER}.log"
+                        def connectivityLogContent = ""
+                        def failureReason = ""
+                        def connectivityFailureReason = ""
+                        if (fileExists(connectivityLogPath)) {
+                            connectivityLogContent = readFile(connectivityLogPath)
+                            if (connectivityLogContent.contains("API 连通性检查失败") ||
+                                connectivityLogContent.contains("Chat Completions 接口检查失败") ||
+                                connectivityLogContent.contains("本地裁判服务连通性检查失败")) {
+                                failureReason = "连通性检查未通过"
+                                def logLines = connectivityLogContent.split('\n')
+                                def collected = []
+                                def inFailureSection = false
+                                for (def ll : logLines) {
+                                    if (ll.contains("检查 API 连通性") || ll.contains("Chat Completions 接口检查") ||
+                                        ll.contains("本地裁判服务连通性")) {
+                                        inFailureSection = true
+                                    }
+                                    if (inFailureSection) {
+                                        if (!collected.isEmpty() && ll.trim().startsWith("===") &&
+                                            !ll.contains("检查 API 连通性") && !ll.contains("Chat Completions 接口检查") &&
+                                            !ll.contains("本地裁判服务连通性")) {
+                                            break
+                                        }
+                                        collected.add(ll)
+                                    }
+                                }
+                                connectivityFailureReason = collected.join('\n').trim()
+                            }
+                        }
+                        if (!failureReason && env.CONNECTIVITY_FAILED == 'true') {
+                            failureReason = "连通性检查未通过"
+                            connectivityFailureReason = "API 连通性/Chat Completions/本地裁判服务连通性检查失败,具体日志未拉到,详见 Jenkins 控制台输出。"
+                        }
+
+                        // 读取评分汇总(MathArena 无标准报告文件,汇总由 extract_results.py 生成)
+                        def result = null
+                        def summaryPath = "${resultBase}/result_summary.json"
+                        if (fileExists(summaryPath)) {
+                            result = readJSON(file: summaryPath)
+                        }
+
+                        def compSummaryRows = ""
+                        def compDetailHtml = ""
+                        def hasResult = (result != null && result.competitions != null && result.competitions.size() > 0)
+                        if (failureReason) {
+                            compSummaryRows = "<tr><td colspan='5'>连通性检查未通过,任务未执行</td></tr>"
+                        } else if (!hasResult) {
+                            compSummaryRows = "<tr><td colspan='5'>无评测结果(评测或评判失败,详见附件日志)</td></tr>"
+                        } else {
+                            for (def c in result.competitions) {
+                                def graded = c.n_graded
+                                def total = c.n_problems_run
+                                def pass1 = c.pass_at_1_display ?: "N/A"
+                                compSummaryRows += """
+                <tr class="score-highlight"><td>${c.display_name}</td><td>${pass1}</td><td>${graded}/${total}</td><td>${c.n_todo_grading}</td><td>${c.n_missing}</td></tr>"""
+                                def unjudgedNote = (c.n_todo_grading > 0) ? "<tr><td colspan='2'><em>存在未评判题目,pass@1 仅统计已评判题目</em></td><td colspan='2'>待评判题数: ${c.n_todo_grading}</td><td>缺失题数: ${c.n_missing}</td></tr>" : ""
+                                def tokenNote = ""
+                                def inTok = c.input_tokens != null ? c.input_tokens : "N/A"
+                                def outTok = c.output_tokens != null ? c.output_tokens : "N/A"
+                                def timeSec = c.time_seconds != null ? String.format("%.1f", c.time_seconds) : "N/A"
+                                tokenNote = "<tr><td colspan='2'><em>token 用量 / 耗时</em></td><td>input: ${inTok}</td><td>output: ${outTok}</td><td>time: ${timeSec}s</td></tr>"
+                                compDetailHtml += """
+            <div class="section-title">${c.display_name} 详细结果</div>
+            <table>
+                <tr style="background-color: #e3f2fd;"><th>数据集</th><th>pass@1</th><th>已评判/已运行题数</th><th>待评判</th><th>缺失</th></tr>
+                <tr><td>${c.display_name}</td><td>${pass1}</td><td>${graded}/${total}</td><td>${c.n_todo_grading}</td><td>${c.n_missing}</td></tr>
+                ${unjudgedNote}
+                ${tokenNote}
+            </table>
+            <p style="font-size: 12px; color: #666;">correct runs: ${c.n_correct_runs}/${c.n_total_runs}, 带警告运行: ${c.n_warned_runs}</p>
+"""
+                            }
+                        }
+
+                        def overallDisplay = hasResult ? (result.overall.pass_at_1_display ?: "N/A") : "N/A"
+                        def resultStatus = hasResult ? "完成" : "失败/无结果"
+                        if (failureReason) {
+                            resultStatus = "失败/${failureReason}"
+                        } else if (hasResult && result.overall.n_todo_grading > 0) {
+                            resultStatus = "部分完成(存在未评判题目)"
+                        }
+
+                        // 连通性失败 HTML 块
+                        def connectivityFailureHtml = ""
+                        if (failureReason) {
+                            def escapedReason = (connectivityFailureReason ?: '')
+                                .replace('&', '&amp;')
+                                .replace('<', '&lt;')
+                                .replace('>', '&gt;')
+                            connectivityFailureHtml = """
+            <div style="background-color: #ffebee; color: #000000; border-left: 4px solid #d32f2f; padding: 12px 15px; margin-top: 15px; border-radius: 3px;">
+                <h3 style="color: #d32f2f; margin-top: 0; margin-bottom: 8px;">⚠️ 连通性检查未通过</h3>
+                <p style="margin-top: 0; margin-bottom: 8px; color: #000000;">本次测试未能正常执行用例,原因是 API 连通性检查失败:</p>
+                <pre style="background-color: #ffffff; color: #000000; padding: 10px; border-radius: 3px; overflow-x: auto; white-space: pre-wrap; margin: 0; font-family: Menlo, Consolas, monospace; font-size: 12px;">${escapedReason}</pre>
+            </div>"""
+                        }
+
+                        // 评判配置展示:裁判固定为本地部署模型
+                        def judgeDisplay = "本地裁判(${params.JUDGE_MODEL} @ ${params.JUDGE_BASE_URL})"
+
+                        def emailBody = """
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background-color: #fff; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .header { background-color: ${hasResult ? '#4CAF50' : '#f44336'}; color: white; padding: 20px; border-radius: 5px 5px 0 0; }
+        .content { padding: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 13px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .footer { margin-top: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; color: #666; font-size: 12px; }
+        .section-title { background-color: #e3f2fd; padding: 10px; margin-top: 20px; border-radius: 3px; font-weight: bold; }
+        .score-highlight { background-color: #c8e6c9; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2 style="margin: 0;">MathArena 精度测试报告 - 构建 #${BUILD_NUMBER}</h2>
+        </div>
+        <div class="content">
+            <h3>测试概要</h3>
+            <table>
+                <tr><th>项目</th><td>值</td></tr>
+                <tr><th>构建编号</th><td>#${BUILD_NUMBER}</td></tr>
+                <tr><th>模型服务描述</th><td>${params.DESCRIPTION}</td></tr>
+                <tr><th>测试人员</th><td>${params.TESTER}</td></tr>
+                <tr><th>芯片平台</th><td>${params.CHIP}</td></tr>
+                <tr><th>模型名称</th><td>${params.MODEL}</td></tr>
+                <tr><th>API地址</th><td>${params.BASE_URL}</td></tr>
+                <tr><th>评测数据集</th><td>${env.COMPS ?: (failureReason ? '未执行(连通性检查未通过)' : 'N/A')}</td></tr>
+                <tr><th>每题运行次数</th><td>${params.N}</td></tr>
+                <tr><th>并发请求</th><td>${params.CONCURRENT_REQUESTS}</td></tr>
+                <tr><th>temperature</th><td>${params.TEMPERATURE ?: 'default'}</td></tr>
+                <tr><th>top_p</th><td>${params.TOP_P ?: 'default'}</td></tr>
+                <tr><th>max_tokens</th><td>${params.MAX_TOKENS ?: 'unlimited'}</td></tr>
+                <tr><th>评判配置</th><td>${judgeDisplay}</td></tr>
+                <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>
+                <tr><th>测试状态</th><td>${resultStatus}</td></tr>
+                <tr><th>构建状态</th><td>${currentBuild.currentResult}</td></tr>
+            </table>
+
+            ${connectivityFailureHtml}
+
+            <h3>数据集汇总得分</h3>
+            <table>
+                <tr style="background-color: #e3f2fd;"><th>数据集</th><th>pass@1</th><th>已评判/已运行题数</th><th>待评判题数</th><th>缺失题数</th></tr>
+                ${compSummaryRows}
+            </table>
+            <p><strong>总体 pass@1(各数据集简单平均): ${overallDisplay}</strong></p>
+
+            ${compDetailHtml}
+
+            <h3>输出目录</h3>
+            <p>${failureReason ? 'N/A (连通性检查未通过)' : (env.RESULT_DIR ?: 'N/A')}</p>
+
+            <p style="margin-top: 20px;">详细日志与逐题评分见附件(result_summary.csv 为逐题明细)。</p>
+            <p>Jenkins 构建地址: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+        </div>
+        <div class="footer">
+            此邮件由 Jenkins 自动发送，请勿回复。
+        </div>
+    </div>
+</body>
+</html>"""
+
+                        echo "=== MathArena 测试结果 ==="
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        echo "结果目录: ${env.RESULT_DIR ?: 'N/A'}"
+                        echo "测试状态: ${resultStatus}"
+                        echo "总体 pass@1: ${overallDisplay}"
+                        if (hasResult) {
+                            for (def c in result.competitions) {
+                                println("  ${c.display_name} pass@1: ${c.pass_at_1_display} (已评判 ${c.n_graded}/${c.n_problems_run})")
+                            }
+                        }
+
+                        // 附件:评测日志/评判日志/评分汇总
+                        def attachPatterns = []
+                        if (fileExists("${resultBase}/matharena_run.log")) {
+                            attachPatterns.add("${resultBase}/matharena_run.log")
+                        }
+                        if (fileExists("${resultBase}/matharena_judge.log")) {
+                            attachPatterns.add("${resultBase}/matharena_judge.log")
+                        }
+                        if (fileExists("${resultBase}/result_summary.json")) {
+                            attachPatterns.add("${resultBase}/result_summary.json")
+                        }
+                        if (fileExists("${resultBase}/result_summary.csv")) {
+                            attachPatterns.add("${resultBase}/result_summary.csv")
+                        }
+                        if (fileExists("builds/${BUILD_NUMBER}/matharena_connectivity_${BUILD_NUMBER}.log")) {
+                            attachPatterns.add("builds/${BUILD_NUMBER}/matharena_connectivity_${BUILD_NUMBER}.log")
+                        }
+                        def attachPattern = attachPatterns.join(',')
+
+                        // 附件列表可能为空(如连通性日志也未拉到),此时不传 attachmentsPattern
+                        def emailParams = [
+                            subject: "[模型推理 - MathArena精度测试报告] #${BUILD_NUMBER} ${params.CHIP} - ${params.MODEL}",
+                            body: emailBody,
+                            to: "${params.RECIPIENTS}",
+                            mimeType: 'text/html',
+                        ]
+                        if (attachPattern) {
+                            emailParams.attachmentsPattern = attachPattern
+                        }
+                        emailext(emailParams)
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                archiveArtifacts artifacts: "reports/${params.TESTER}/${BUILD_NUMBER}/**,builds/${BUILD_NUMBER}/**", allowEmptyArchive: true, fingerprint: true
+                echo "构建完成: ${currentBuild.currentResult}"
+            }
+        }
+        cleanup {
+            cleanWs()
+        }
+    }
+}
