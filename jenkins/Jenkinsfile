@@ -316,17 +316,20 @@ ENDSSH
                         script {
                             def remoteDir = "${params.WORK_DIR}/${env.RESULT_DIR}"
                             def localDir = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR}"
+                            def localParentDir = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}"
                             def localBuildsDir = "builds/${BUILD_NUMBER}"
                             echo "拉取测试结果目录: ${remoteDir}"
 
                             if (env.CONNECTIVITY_FAILED == 'true') {
                                 echo "=== 连通性检查未通过,跳过测试结果目录拉取,仅拉取连通性预检日志 ==="
                             } else {
+                                // scp -r 会把远端目录整个放入目标之下,须落到父目录,
+                                // 否则 model 目录会双层嵌套,邮件阶段找不到 result_summary
                                 sh """
-mkdir -p ${localDir}
+mkdir -p ${localParentDir}
 scp -o StrictHostKeyChecking=no \
     -r ${REMOTE_USER}@${REMOTE_HOST}:${remoteDir} \
-    ${localDir}/
+    ${localParentDir}/
 echo "=== 拉取结果 ==="
 find ${localDir}/ -type f
 """

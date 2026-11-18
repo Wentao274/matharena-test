@@ -34,7 +34,7 @@ Jenkins(slave-2 agent)
  ├─ 3. 环境检查                    # 清理残留评测进程 → 检查 uv → uv sync 同步依赖(每次触发,幂等) → 验证 venv 与关键依赖
  ├─ 4. 运行matharena评测           # ssh 远端机执行 run_matharena_eval.py:
  │        生成 alaya_test_model.yaml + alaya_local_judge.yaml + local_judge.yaml(存在先删除)
- │        → (代理)预下载 HuggingFace 数据集
+ │        → (代理)预下载 HuggingFace 数据集 → 评测/评判以 HF_HUB_OFFLINE 离线读缓存(不联网)
  │        → scripts/run.py 评测 (api: custom 纯模型,经 HTTP)
  │        → scripts/judge/judge.py 评判 (ArXivMath 必需,裁判 = 本地部署模型)
  │        → jenkins/extract_results.py 提取 → result_summary.json/csv
@@ -176,6 +176,7 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | 大量 429/超时警告 | CONCURRENT_REQUESTS 超过模型服务承受能力,调小(如 16/8) |
 | 请求 400 报 context 超限 | MAX_TOKENS 超过模型上下文长度,按模型实际能力调小 |
 | 数据集下载失败 | PROXY_URL 未填或代理不可用;编排脚本预下载失败会立即报错(退出码 2),已下载过的数据集走本地缓存 |
+| 评测卡在 huggingface 重试 | 已修复:评测/评判以 HF_HUB_OFFLINE 离线模式读预下载缓存,不再向 HuggingFace 发联网检查;数据集拉取(含代理)只发生在预下载阶段 |
 | 环境检查阶段报"未安装 uv" | 在评测机安装:`curl -LsSf https://astral.sh/uv/install.sh \| sh`(需出网或代理);依赖安装/venv 验证由每次构建自动执行,无需手工干预 |
 | 冒烟测试只跑几道题 | `PROBLEMS` 填题号(如 `1 2 3 4 5`);评判自动只判已跑题目,邮件"缺失题数"较大属正常,pass@1 仅统计已评判题 |
 | 连通性预检 401 | 服务要求 API Key:填 `API_KEY`(裁判服务填 `JUDGE_API_KEY`),预检会自动携带所填 Key 的 `Authorization: Bearer` 头;填了仍 401 说明 Key 无效或无权限 |

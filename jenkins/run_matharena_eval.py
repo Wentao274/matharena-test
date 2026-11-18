@@ -29,6 +29,10 @@ run.py 对已完成的题目自动跳过,天然支持断点续跑。
 judge.py 只评判已生成的运行文件,提取汇总将未跑的题计为"缺失"(不算失败),
 pass@1 仅统计已评判题目。
 
+评测/评判子进程运行在 HF_HUB_OFFLINE=1 离线模式:数据集由预下载阶段
+(走代理)写入本地缓存后,评测期间不再访问 HuggingFace,
+保证"评测不走代理"且不会因直连不可达反复重试卡死。
+
 手动执行可省略 --build-number,脚本自动生成 manual-<YYYYMMDD-HHMMSS>,
 每次执行获得独立目录,不会覆盖此前的结果;需断点续跑时显式传回同一编号。
 
@@ -340,6 +344,11 @@ def main():
     for _k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
                "all_proxy", "ALL_PROXY"):
         env.pop(_k, None)
+    # 数据集已由预下载阶段(走代理)写入本地缓存;评测/评判以离线模式读缓存,
+    # 避免 run.py/judge.py 再次向 HuggingFace 发 HEAD 检查——
+    # 评测机直连不可达时这会反复重试(每次约 30 秒)把流水线卡死
+    env["HF_HUB_OFFLINE"] = "1"
+    env["HF_DATASETS_OFFLINE"] = "1"
     if args.api_key:
         env[API_KEY_ENV_NAME] = args.api_key
     if args.judge_api_key:
