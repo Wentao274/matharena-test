@@ -74,6 +74,7 @@ pipeline {
                     println("芯片平台:        ${params.CHIP}")
                     println("模型名称:        ${params.MODEL}")
                     println("BASE_URL:        ${params.BASE_URL}  (→ ${env.BASE_URL_V1})")
+                    println("API_KEY:         ${params.API_KEY?.trim() ? '(已填写)' : '(未填写)'}")
                     println("任务 ArXivMath:   ${params.TASK_ARXIVMATH}")
                     println("每题运行次数:    ${params.N}")
                     println("题目范围:        ${params.PROBLEMS?.trim() ? params.PROBLEMS.trim() + ' (子集/冒烟)' : '全量'}")
@@ -84,6 +85,7 @@ pipeline {
                     println("timeout:         ${params.TIMEOUT ?: 'default'}")
                     println("本地裁判模型:    ${params.JUDGE_MODEL ?: '(未填写!)'}")
                     println("本地裁判地址:    ${params.JUDGE_BASE_URL ?: '(未填写!)'}")
+                    println("裁判服务 Key:    ${params.JUDGE_API_KEY?.trim() ? '(已填写)' : '(未填写)'}")
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
                     println("工作目录:        ${params.WORK_DIR}")
@@ -103,13 +105,22 @@ pipeline {
                 sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
                     script {
                         try {
+                            // 鉴权头:参数填了 Key 才携带 Authorization(服务要求鉴权时预检才能通过;
+                            // heredoc 内容不会回显到 Jenkins 控制台,Key 不泄漏)
+                            def apiKeyStr = params.API_KEY?.toString()?.trim() ?: ''
+                            def authArgs = apiKeyStr ? "-H \"Authorization: Bearer ${apiKeyStr}\"" : ''
+                            def judgeApiKeyStr = params.JUDGE_API_KEY?.toString()?.trim() ?: ''
+                            def judgeAuthArgs = judgeApiKeyStr ? "-H \"Authorization: Bearer ${judgeApiKeyStr}\"" : ''
                             // 本地裁判服务预检块(JUDGE_MODEL/JUDGE_BASE_URL 已在打印参数阶段校验必填;
                             // 裁判挂了提前失败,避免整轮评测跑完才发现 53 题全部待评判)
                             def judgeCheck = """
     echo "=== 检查本地裁判服务连通性 (/v1/models) ==="
-    JUDGE_HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.JUDGE_URL_V1}/models)
+    JUDGE_HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.JUDGE_URL_V1}/models ${judgeAuthArgs})
     if [ "\${JUDGE_HTTP_CODE}" != "200" ]; then
         echo "ERROR: 本地裁判服务连通性检查失败, HTTP状态码: \${JUDGE_HTTP_CODE}, URL: ${env.JUDGE_URL_V1}/models (请检查 JUDGE_BASE_URL/JUDGE_MODEL 参数)"
+        if [ "\${JUDGE_HTTP_CODE}" = "401" ]; then
+            echo "提示: 401 = 鉴权失败,请检查 JUDGE_API_KEY 参数(本次检查${judgeApiKeyStr ? '已携带' : '未携带'} Authorization 头)"
+        fi
         exit 1
     fi
     echo "本地裁判服务连通性检查通过, HTTP状态码: \${JUDGE_HTTP_CODE}"
@@ -121,9 +132,12 @@ set -o pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 {
     echo "=== 检查 API 连通性 (/v1/models) ==="
-    HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
+    HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models ${authArgs})
     if [ "\${HTTP_CODE}" != "200" ]; then
         echo "ERROR: API 连通性检查失败, HTTP状态码: \${HTTP_CODE}, URL: ${env.BASE_URL_V1}/models"
+        if [ "\${HTTP_CODE}" = "401" ]; then
+            echo "提示: 401 = 鉴权失败,服务要求 API Key,请检查 API_KEY 参数(本次检查${apiKeyStr ? '已携带' : '未携带'} Authorization 头)"
+        fi
         exit 1
     fi
     echo "API /models 连通性检查通过, HTTP状态码: \${HTTP_CODE}"
@@ -131,11 +145,15 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
     echo "=== 检查 Chat Completions 接口 ==="
     CHAT_RESP=\$(curl -s --connect-timeout 10 -m 60 -w "\\n%{http_code}" ${env.BASE_URL_V1}/chat/completions \\
         -H "Content-Type: application/json" \\
+        ${authArgs} \\
         -d '{"model":"${params.MODEL}","messages":[{"role":"user","content":"hello"}],"max_tokens":10}')
     CHAT_HTTP_CODE=\$(echo "\${CHAT_RESP}" | tail -1)
     if [ "\${CHAT_HTTP_CODE}" != "200" ]; then
         echo "ERROR: Chat Completions 接口检查失败, HTTP状态码: \${CHAT_HTTP_CODE}"
         echo "响应内容: \$(echo "\${CHAT_RESP}" | head -n -1)"
+        if [ "\${CHAT_HTTP_CODE}" = "401" ]; then
+            echo "提示: 401 = 鉴权失败,服务要求 API Key,请检查 API_KEY 参数(本次检查${apiKeyStr ? '已携带' : '未携带'} Authorization 头)"
+        fi
         exit 1
     fi
     echo "Chat Completions 接口检查通过, HTTP状态码: \${CHAT_HTTP_CODE}"

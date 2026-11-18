@@ -178,6 +178,7 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | 数据集下载失败 | PROXY_URL 未填或代理不可用;编排脚本预下载失败会立即报错(退出码 2),已下载过的数据集走本地缓存 |
 | 环境检查阶段报"未安装 uv" | 在评测机安装:`curl -LsSf https://astral.sh/uv/install.sh \| sh`(需出网或代理);依赖安装/venv 验证由每次构建自动执行,无需手工干预 |
 | 冒烟测试只跑几道题 | `PROBLEMS` 填题号(如 `1 2 3 4 5`);评判自动只判已跑题目,邮件"缺失题数"较大属正常,pass@1 仅统计已评判题 |
+| 连通性预检 401 | 服务要求 API Key:填 `API_KEY`(裁判服务填 `JUDGE_API_KEY`),预检会自动携带所填 Key 的 `Authorization: Bearer` 头;填了仍 401 说明 Key 无效或无权限 |
 | API_KEY 填了但服务无鉴权 | 不影响(服务忽略鉴权头);反之服务有鉴权而未填,会在评测阶段大量 401 |
 | 想加新数据集 | Jenkinsfile `parameters` 加 booleanParam → `运行matharena评测` stage 的 compList 加映射 → `extract_results.py` 的 `DISPLAY_NAMES` 加显示名 |
 
