@@ -85,3 +85,6 @@ jenkins_output/
 configs/models/alaya_test_model.yaml
 configs/models/alaya_local_judge.yaml
 configs/judges/local_judge.yaml
+
+# 本地 Agent 工作规则(仅本机生效,不入库)
+AGENTS.md
