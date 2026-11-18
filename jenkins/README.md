@@ -31,7 +31,7 @@ Jenkins(slave-2 agent)
  ├─ 2. API 连通性预检              # ssh 远端机 curl /v1/models + chat/completions
  │      # 同时预检本地裁判服务,裁判挂了提前失败(避免评测跑完才发现全"待评判")
  │      └ 失败 → 标记 UNSTABLE,跳过 3/4,邮件给出红色失败块
- ├─ 3. 环境检查                    # 清理残留评测进程;首次构建执行 uv sync
+ ├─ 3. 环境检查                    # 清理残留评测进程 → 检查 uv → uv sync 同步依赖(每次触发,幂等) → 验证 venv 与关键依赖
  ├─ 4. 运行matharena评测           # ssh 远端机执行 run_matharena_eval.py:
  │        生成 alaya_test_model.yaml + alaya_local_judge.yaml + local_judge.yaml(存在先删除)
  │        → (代理)预下载 HuggingFace 数据集
@@ -58,7 +58,8 @@ post: 归档 artifacts + 清理 workspace
 ```bash
 cd /dingofs/data2/userdata/liwt/maas-image/matharena-test   # WORK_DIR
 git pull                                                   # 拉到含 jenkins/ 目录的代码
-uv sync        # 首次安装虚拟环境(pipeline 环境检查阶段也会自动做,需出网或配代理)
+# uv sync 可选:虚拟环境创建/依赖安装/验证由 pipeline 环境检查阶段每次构建自动执行
+# 仅需确保评测机已安装 uv(未安装时环境检查阶段会报错并给出安装命令)
 ```
 
 GPU 机器上按本仓库 `README_LOCAL.md` 的方式拉起模型服务,例如:
@@ -153,7 +154,7 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | UNSTABLE | 某环节失败但报告仍发出:连通性失败 / 评测失败 / 评判失败 / 提取失败,详见邮件与控制台 |
 | FAILURE | 无数据集被勾选 / 流水线级错误(如 SSH 失败) |
 
-编排脚本退出码:0=全部成功;1=评测失败;3=评判失败;4=提取失败
+编排脚本退出码:0=全部成功;1=评测失败;2=数据集预下载失败;3=评判失败;4=提取失败
 (存在未评判/缺失题时提取以退出码 2 提醒,不算失败,邮件体现"部分完成")。
 
 ## 六、断点续跑与重试
@@ -173,7 +174,8 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | 邮件显示"待评判"大量题数 | 本地裁判侧问题:裁判服务未启动 / `JUDGE_MODEL` 与 `--served-model-name` 不匹配 / `JUDGE_BASE_URL` 错误,或裁判模型指令跟随太弱——裁判必须输出恰好一个 `<points>0</points>` 或 `<points>1</points>` 标签,格式不符自动重试 3 次后该题保持"待评判"。建议换更强的裁判模型 |
 | 大量 429/超时警告 | CONCURRENT_REQUESTS 超过模型服务承受能力,调小(如 16/8) |
 | 请求 400 报 context 超限 | MAX_TOKENS 超过模型上下文长度,按模型实际能力调小 |
-| 数据集下载失败 | PROXY_URL 未填或代理不可用;下载仅发生在首次运行,成功一次后走本地缓存 |
+| 数据集下载失败 | PROXY_URL 未填或代理不可用;编排脚本预下载失败会立即报错(退出码 2),已下载过的数据集走本地缓存 |
+| 环境检查阶段报"未安装 uv" | 在评测机安装:`curl -LsSf https://astral.sh/uv/install.sh \| sh`(需出网或代理);依赖安装/venv 验证由每次构建自动执行,无需手工干预 |
 | API_KEY 填了但服务无鉴权 | 不影响(服务忽略鉴权头);反之服务有鉴权而未填,会在评测阶段大量 401 |
 | 想加新数据集 | Jenkinsfile `parameters` 加 booleanParam → `运行matharena评测` stage 的 compList 加映射 → `extract_results.py` 的 `DISPLAY_NAMES` 加显示名 |
 

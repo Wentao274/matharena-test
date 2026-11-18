@@ -187,23 +187,30 @@ else
     echo "未发现残留进程"
 fi
 
-echo "=== 检查并同步虚拟环境 ==="
-if [ ! -d "${params.WORK_DIR}/.venv" ]; then
-    if [ -n "${PROXY_URL_CLEAN}" ]; then
-        export https_proxy=${PROXY_URL_CLEAN}
-        export http_proxy=${PROXY_URL_CLEAN}
-        echo "uv sync 使用代理: ${PROXY_URL_CLEAN}"
-    else
-        echo "uv sync 直连(未配置代理)"
-    fi
-    echo "首次构建:执行 uv sync 创建虚拟环境..."
-    cd ${params.WORK_DIR}
-    uv sync
-    unset https_proxy
-    unset http_proxy
+echo "=== 检查 uv 工具 ==="
+if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: 评测机未安装 uv,无法创建/同步虚拟环境"
+    echo "安装方法(评测机上执行): curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
 fi
+echo "uv 版本: \$(uv --version)"
 
+echo "=== 同步虚拟环境与依赖 (uv sync,每次触发执行,幂等;依赖变更自动安装) ==="
 cd ${params.WORK_DIR}
+if [ -n "${PROXY_URL_CLEAN}" ]; then
+    export https_proxy=${PROXY_URL_CLEAN}
+    export http_proxy=${PROXY_URL_CLEAN}
+    echo "uv sync 使用代理: ${PROXY_URL_CLEAN}"
+else
+    echo "uv sync 直连(未配置代理)"
+fi
+uv sync
+unset https_proxy
+unset http_proxy
+
+echo "=== 验证虚拟环境 ==="
+uv run python --version
+uv run python -c "import matharena, yaml, datasets, zstandard, openai; print('venv 验证通过: 虚拟环境与关键依赖(matharena/yaml/datasets/zstandard/openai)导入正常')"
 echo "=== 环境检查完成 ==="
 ENDSSH
 """

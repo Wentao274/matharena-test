@@ -28,8 +28,8 @@ run.py 对已完成的题目自动跳过,天然支持断点续跑。
 手动执行可省略 --build-number,脚本自动生成 manual-<YYYYMMDD-HHMMSS>,
 每次执行获得独立目录,不会覆盖此前的结果;需断点续跑时显式传回同一编号。
 
-退出码: 0 = 全部成功; 1 = 评测运行失败; 3 = 评测成功但评判失败;
-        4 = 评分提取失败
+退出码: 0 = 全部成功; 1 = 评测运行失败; 2 = 数据集预下载失败;
+        3 = 评测成功但评判失败; 4 = 评分提取失败
 """
 
 import argparse
@@ -239,7 +239,7 @@ def download_datasets(args):
         proxy_env["http_proxy"] = args.proxy
         print(f"(使用代理 {args.proxy})")
     # datasets 库在仓库依赖中;预下载后 run.py 直接命中本地缓存
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-c",
          "import sys, datasets\n"
          "for name in sys.argv[1:]:\n"
@@ -251,6 +251,11 @@ def download_datasets(args):
         env=proxy_env,
         cwd=REPO_ROOT,
     )
+    # 下载失败(网络/代理不可用且无本地缓存)立即报错退出,避免带着缺失数据集进入评测阶段
+    if result.returncode != 0:
+        print(f"ERROR: 数据集预下载失败(退出码 {result.returncode}),"
+              f"请检查网络/代理({args.proxy or '未配置代理'})")
+        sys.exit(2)
 
 
 def run_command(cmd, log_path, env, append=False):
