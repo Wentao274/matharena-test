@@ -74,7 +74,11 @@ pipeline {
                     println("芯片平台:        ${params.CHIP}")
                     println("模型名称:        ${params.MODEL}")
                     println("BASE_URL:        ${params.BASE_URL}  (→ ${env.BASE_URL_V1})")
-                    println("API_KEY:         ${params.API_KEY?.trim() ? '(已填写)' : '(未填写)'}")
+                    // password 参数是 hudson.util.Secret 对象,无 trim() 方法;
+                    // 经 GString 强制转换取值(沙箱安全,Secret 的 toString 在 Java 层完成)
+                    def apiKeyFilled = params.API_KEY ? "${params.API_KEY}".toString().trim() : ''
+                    def judgeApiKeyFilled = params.JUDGE_API_KEY ? "${params.JUDGE_API_KEY}".toString().trim() : ''
+                    println("API_KEY:         ${apiKeyFilled ? '(已填写)' : '(未填写)'}")
                     println("任务 ArXivMath:   ${params.TASK_ARXIVMATH}")
                     println("每题运行次数:    ${params.N}")
                     println("题目范围:        ${params.PROBLEMS?.trim() ? params.PROBLEMS.trim() + ' (子集/冒烟)' : '全量'}")
@@ -85,7 +89,7 @@ pipeline {
                     println("timeout:         ${params.TIMEOUT ?: 'default'}")
                     println("本地裁判模型:    ${params.JUDGE_MODEL ?: '(未填写!)'}")
                     println("本地裁判地址:    ${params.JUDGE_BASE_URL ?: '(未填写!)'}")
-                    println("裁判服务 Key:    ${params.JUDGE_API_KEY?.trim() ? '(已填写)' : '(未填写)'}")
+                    println("裁判服务 Key:    ${judgeApiKeyFilled ? '(已填写)' : '(未填写)'}")
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
                     println("工作目录:        ${params.WORK_DIR}")
@@ -106,10 +110,11 @@ pipeline {
                     script {
                         try {
                             // 鉴权头:参数填了 Key 才携带 Authorization(服务要求鉴权时预检才能通过;
-                            // heredoc 内容不会回显到 Jenkins 控制台,Key 不泄漏)
-                            def apiKeyStr = params.API_KEY?.toString()?.trim() ?: ''
+                            // heredoc 内容不会回显到 Jenkins 控制台,Key 不泄漏;
+                            // password 参数为 Secret 对象,须经 GString 强制转换取值)
+                            def apiKeyStr = params.API_KEY ? "${params.API_KEY}".toString().trim() : ''
                             def authArgs = apiKeyStr ? "-H \"Authorization: Bearer ${apiKeyStr}\"" : ''
-                            def judgeApiKeyStr = params.JUDGE_API_KEY?.toString()?.trim() ?: ''
+                            def judgeApiKeyStr = params.JUDGE_API_KEY ? "${params.JUDGE_API_KEY}".toString().trim() : ''
                             def judgeAuthArgs = judgeApiKeyStr ? "-H \"Authorization: Bearer ${judgeApiKeyStr}\"" : ''
                             // 本地裁判服务预检块(JUDGE_MODEL/JUDGE_BASE_URL 已在打印参数阶段校验必填;
                             // 裁判挂了提前失败,避免整轮评测跑完才发现 53 题全部待评判)
@@ -259,8 +264,9 @@ ENDSSH
                     env.MODEL_DIR = modelDir
                     env.RESULT_DIR = "jenkins_output/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${modelDir}"
 
-                    def apiKeyStr = params.API_KEY?.toString() ?: ''
-                    def judgeApiKeyStr = params.JUDGE_API_KEY?.toString() ?: ''
+                    // password 参数为 Secret 对象,经 GString 强制转换取值(沙箱安全)
+                    def apiKeyStr = params.API_KEY ? "${params.API_KEY}".toString().trim() : ''
+                    def judgeApiKeyStr = params.JUDGE_API_KEY ? "${params.JUDGE_API_KEY}".toString().trim() : ''
 
                     sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
