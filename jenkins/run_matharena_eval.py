@@ -123,6 +123,10 @@ def generate_model_config(args):
     if args.api_key:
         # api: custom 时 api_key_env 指定密钥环境变量(由编排脚本注入子进程)
         lines.append(f"api_key_env: {API_KEY_ENV_NAME}")
+    # arxiv/september 竞赛 allow_harness: true,未显式禁用时 runner 会把纯模型
+    # 静默路由进 codex harness(首次运行需联网下载 CLI,直连不可达即失败);
+    # harness: false 走 PureModelSolver 纯 chat completions(上游支持的退出开关)
+    lines.append("harness: false")
     if args.max_tokens:
         lines.append(f"max_tokens: {args.max_tokens}")
     if args.temperature:
