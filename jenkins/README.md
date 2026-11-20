@@ -176,7 +176,9 @@ jenkins_output/<tester>/<build_number>/<chip>/<model>/
 | 大量 429/超时警告 | CONCURRENT_REQUESTS 超过模型服务承受能力,调小(如 16/8) |
 | 请求 400 报 context 超限 | MAX_TOKENS 超过模型上下文长度,按模型实际能力调小 |
 | 数据集下载失败 | PROXY_URL 未填或代理不可用;编排脚本预下载失败会立即报错(退出码 2),已下载过的数据集走本地缓存 |
-| 评测在 codex CLI 下载处 BrokenPipe | arxiv/september `allow_harness: true`,模型配置未显式 `harness: false` 时 runner 默认路由进 codex harness(需联网下载 CLI);生成配置已固定 `harness: false` 走纯模型 API |
+ | codex CLI 下载处 BrokenPipe | arxiv/september `allow_harness: true`,模型配置未显式 `harness: false` 时 runner 默认路由进 codex harness(需联网下载 CLI);生成配置已固定 `harness: false` 走纯模型 API |
+| judge.py 报 `FileNotFoundError: configs/local_judge.yaml` | judge.py 按 `configs/{ref}.yaml` 拼接,ref 必须含子目录(同上游 `judges/answer_judge` 写法);编排脚本已改为传 `--judge-configs judges/local_judge` |
+| 评测日志出现 `thinking_token_budget_exceeded (400)` 并重试 | 被测服务端思考预算上限(本次 65536)截断生成;api_client 自动重试,非流水线问题;频繁出现时需服务端调参或调小 `MAX_TOKENS` |
 | 评测卡在 huggingface 重试 | 已修复:评测/评判以 HF_HUB_OFFLINE 离线模式读预下载缓存,不再向 HuggingFace 发联网检查;数据集拉取(含代理)只发生在预下载阶段 |
 | 环境检查阶段报"未安装 uv" | 在评测机安装:`curl -LsSf https://astral.sh/uv/install.sh \| sh`(需出网或代理);依赖安装/venv 验证由每次构建自动执行,无需手工干预 |
 | 冒烟测试只跑几道题 | `PROBLEMS` 填题号(如 `1 2 3 4 5`);评判自动只判已跑题目,邮件"缺失题数"较大属正常,pass@1 仅统计已评判题 |

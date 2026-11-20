@@ -59,6 +59,9 @@ JUDGE_MODEL_CONFIG_NAME = "alaya_local_judge"
 JUDGE_MODEL_CONFIG_PATH = os.path.join(REPO_ROOT, "configs", "models", f"{JUDGE_MODEL_CONFIG_NAME}.yaml")
 LOCAL_JUDGE_CONFIG_NAME = "local_judge"
 LOCAL_JUDGE_CONFIG_PATH = os.path.join(REPO_ROOT, "configs", "judges", f"{LOCAL_JUDGE_CONFIG_NAME}.yaml")
+# judge.py 按 configs/{ref}.yaml 拼接路径,ref 必须带子目录前缀
+# (同上游 september.yaml 的 judge_configs: judges/answer_judge 写法)
+LOCAL_JUDGE_CONFIG_REF = f"judges/{LOCAL_JUDGE_CONFIG_NAME}"
 LOCAL_JUDGE_API_KEY_ENV_NAME = "ALAYA_JUDGE_API_KEY"
 # 基准裁判配置(逐字节复制生成 local_judge,仅替换 model_config 首行)
 ORIGINAL_ANSWER_JUDGE_PATH = os.path.join(REPO_ROOT, "configs", "judges", "answer_judge.yaml")
@@ -300,6 +303,9 @@ def _clean_placeholder_url(url):
 
 
 def main():
+    # 非 TTY(SSH/Jenkins)下 stdout 默认块缓冲,会让本脚本的打印
+    # 堆积到子进程(tee 实时写)之后,日志顺序错乱;按行刷新保证实时可见
+    sys.stdout.reconfigure(line_buffering=True)
     args = parse_args()
     args.proxy = _clean_placeholder_url(args.proxy)
     # 本地裁判参数为空串时(Jenkins 传参)直接报错,避免带空配置跑完整评测
@@ -393,7 +399,7 @@ def main():
             "--models",
             MODEL_CONFIG_NAME,
             "--judge-configs",
-            LOCAL_JUDGE_CONFIG_NAME,
+            LOCAL_JUDGE_CONFIG_REF,
             "--output-dir",
             os.path.join(output_dir, "outputs"),
         ]
