@@ -117,15 +117,15 @@ RECIPIENTS     = liwt@zetyun.com     # 报告接收人,逗号分隔
 | `PROBLEMS` | 否 | 只跑指定题目:1 起始题号,空格分隔(如 `1 2 3 4 5`),**冒烟测试用**;空 = 全量。评判只处理已生成的运行文件,未跑题目在汇总中计为"缺失"(不算失败) |
 | `MAX_TOKENS` | 否 | 生成最大 token 数,默认 131072;**不要超过模型上下文长度**,否则请求报错;留空 = 不写入配置 |
 | `TEMPERATURE` / `TOP_P` | 否 | 采样参数,默认 1.0 / 0.95;留空 = 不写入配置 |
-| `CONCURRENT_REQUESTS` | 否 | 并发请求数,默认 30;建议不超过模型服务的 `--max-num-seqs`,否则大量 429/超时 |
+| `CONCURRENT_REQUESTS` | 否 | 并发请求数,默认 1;建议不超过模型服务的 `--max-num-seqs`,否则大量 429/超时 |
 | `TIMEOUT` | 否 | 单请求超时,**单位秒**,默认空 = 框架默认 30000 秒 |
 | `JUDGE_MODEL` | **是** | 本地裁判模型名,须与裁判服务 `--served-model-name` 一致;自动生成 `alaya_local_judge.yaml` + `local_judge.yaml`(固定名,每次触发删除重建)。建议与被测模型用不同家族的强模型,避免自评偏差 |
 | `JUDGE_BASE_URL` | **是** | 本地裁判服务根 URL,不带 `/v1`(流水线自动拼接,幂等) |
 | `JUDGE_API_KEY` | 否 | 本地裁判服务鉴权 Key,无鉴权留空;裁判固定 `temperature: 0` 保证评判可复现 |
+| `PROXY_URL` | 否 | 代理,仅 **uv sync 依赖安装**与**数据集预下载**使用;**连通性检查、评测、评判一律不走代理**(各阶段显式清空代理变量,防全局环境泄漏)。默认占位符 `http://<proxy-host>:<proxy-port>`,填实际地址后生效(占位符=不用代理) |
 | `DESCRIPTION` | 否 | 模型服务描述(仅邮件展示) |
 | `RECIPIENTS` | 是 | 报告邮件接收者,逗号分隔 |
 | `WORK_DIR` | 是 | 评测机上的仓库目录,默认 `/dingofs/data2/userdata/liwt/maas-image/matharena-test`,**请勿改动** |
-| `PROXY_URL` | 否 | 代理,仅 **uv sync 依赖安装**与**数据集预下载**使用;**连通性检查、评测、评判一律不走代理**(各阶段显式清空代理变量,防全局环境泄漏)。默认占位符 `http://<proxy-host>:<proxy-port>`,填实际地址后生效(占位符=不用代理) |
 
 ## 五、查看结果
 

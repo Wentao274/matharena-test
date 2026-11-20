@@ -36,7 +36,7 @@ pipeline {
         string(name: 'MAX_TOKENS', defaultValue: '131072', description: '生成最大 token 数(默认 131072;空 = 不写入配置)')
         string(name: 'TEMPERATURE', defaultValue: '1.0', description: '采样温度(默认 1.0;空 = 不写入配置)')
         string(name: 'TOP_P', defaultValue: '0.95', description: 'top_p(默认 0.95;空 = 不写入配置)')
-        string(name: 'CONCURRENT_REQUESTS', defaultValue: '30', description: '并发请求数(默认 30,建议不超过模型服务的 --max-num-seqs)')
+        string(name: 'CONCURRENT_REQUESTS', defaultValue: '1', description: '并发请求数(默认 1,建议不超过模型服务的 --max-num-seqs)')
         string(name: 'TIMEOUT', defaultValue: '', description: '单请求超时,单位秒(空 = 框架默认 30000 秒)')
 
         // 本地部署裁判(裁判仅支持本地部署模型,JUDGE_MODEL/JUDGE_BASE_URL 必填;
@@ -46,10 +46,10 @@ pipeline {
         string(name: 'JUDGE_BASE_URL', defaultValue: '', description: '本地裁判服务根 URL(必填,不带 /v1,流水线自动拼接)')
         password(name: 'JUDGE_API_KEY', defaultValue: '', description: '本地裁判服务 API Key(无需认证时留空)')
 
+        string(name: 'PROXY_URL', defaultValue: 'http://<proxy-host>:<proxy-port>', description: '代理(请填写实际地址;仅 uv sync 依赖安装与数据集预下载使用;连通性检查/评测/评判一律不走代理;留空=不使用代理)')
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
         text(name: 'RECIPIENTS', defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
         string(name: 'WORK_DIR', defaultValue: '/dingofs/data2/userdata/liwt/maas-image/matharena-test', description: '远程仓库目录,请不要改动')
-        string(name: 'PROXY_URL', defaultValue: 'http://<proxy-host>:<proxy-port>', description: '代理(请填写实际地址;仅 uv sync 依赖安装与数据集预下载使用;连通性检查/评测/评判一律不走代理;留空=不使用代理)')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
